@@ -1,0 +1,72 @@
+[
+  {
+    "n_transactions": 502,
+    "n_fraud": 489,
+    "fraud_rate": 0.9741035856573705,
+    "avg_amount": 248.31282245631775,
+    "total_amount": 124653.03687307151,
+    "time_span_hours": 716.1541666666667,
+    "shared_entity_types": [
+      "DeviceInfo",
+      "card1"
+    ],
+    "unique_cards": 25,
+    "unique_devices": 22
+  },
+  {
+    "n_transactions": 8,
+    "n_fraud": 2,
+    "fraud_rate": 0.25,
+    "avg_amount": 115.11374884986407,
+    "total_amount": 920.9099907989125,
+    "time_span_hours": 485.7191666666667,
+    "shared_entity_types": [
+      "DeviceInfo",
+      "card1"
+    ],
+    "unique_cards": 5,
+    "unique_devices": 4
+  },
+  {
+    "n_transactions": 5,
+    "n_fraud": 1,
+    "fraud_rate": 0.2,
+    "avg_amount": 65.22383166823445,
+    "total_amount": 326.1191583411723,
+    "time_span_hours": 469.0877777777778,
+    "shared_entity_types": [
+      "DeviceInfo",
+      "card1"
+    ],
+    "unique_cards": 4,
+    "unique_devices": 2
+  },
+  {
+    "n_transactions": 5,
+    "n_fraud": 1,
+    "fraud_rate": 0.2,
+    "avg_amount": 130.84990149562094,
+    "total_amount": 654.2495074781046,
+    "time_span_hours": 305.52944444444444,
+    "shared_entity_types": [
+      "DeviceInfo",
+      "card1"
+    ],
+    "unique_cards": 2,
+    "unique_devices": 4
+  },
+  {
+    "n_transactions": 5,
+    "n_fraud": 1,
+    "fraud_rate": 0.2,
+    "avg_amount": 227.98961741108897,
+    "total_amount": 1139.9480870554448,
+    "time_span_hours": 549.9344444444445,
+    "shared_entity_types": [
+      "DeviceInfo",
+      "card1"
+    ],
+    "unique_cards": 3,
+    "unique_devices": 3
+  }
+]

@@ -1,0 +1,27 @@
+# Data (download separately — see README)
+data/*.csv
+data/*.zip
+
+# Model weights (regenerate via training scripts)
+models/*.pt
+models/*.pkl
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Results are small JSON — keep them tracked so the README numbers are
+# reproducible/visible without re-running training, but ignore large dumps
+results/*.png

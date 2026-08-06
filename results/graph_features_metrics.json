@@ -1,0 +1,52 @@
+{
+  "model": "xgb_graph_features",
+  "metrics": {
+    "pr_auc": 0.8164539330445281,
+    "recall@1%fpr": 0.7862068965517242,
+    "recall@5%fpr": 0.8
+  },
+  "n_train": 16000,
+  "n_test": 4000,
+  "top_features": [
+    [
+      "card1_freq",
+      0.4026479423046112
+    ],
+    [
+      "DeviceInfo_freq",
+      0.2693500518798828
+    ],
+    [
+      "graph_component_size",
+      0.06834579259157181
+    ],
+    [
+      "TransactionAmt",
+      0.04315520450472832
+    ],
+    [
+      "TransactionAmt_log",
+      0.04314349591732025
+    ],
+    [
+      "addr1",
+      0.022183209657669067
+    ],
+    [
+      "TransactionAmt_decimal",
+      0.021357044577598572
+    ],
+    [
+      "graph_component_id",
+      0.020628733560442924
+    ],
+    [
+      "P_emaildomain_freq",
+      0.020468641072511673
+    ],
+    [
+      "addr1_freq",
+      0.019927434623241425
+    ]
+  ]
+}

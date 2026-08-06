@@ -1,0 +1,12 @@
+{
+  "model": "graphsage",
+  "metrics": {
+    "pr_auc": 0.821623448951668,
+    "recall@1%fpr": 0.7931034482758621,
+    "recall@5%fpr": 0.8206896551724138
+  },
+  "n_train": 16000,
+  "n_test": 4000,
+  "hidden_dim": 64,
+  "num_layers": 2
+}
