@@ -142,6 +142,7 @@ FraudMesh/
 ├── config.py                    # paths (incl. Kaggle auto-detection), entity-link
 │                                 # columns, hyperparameters
 ├── requirements.txt              # local (venv) setup
+├── environment.yml                # local (conda) setup, wraps requirements.txt
 ├── requirements-kaggle.txt       # Kaggle setup — just the packages Kaggle lacks
 ├── notebooks/
 │   └── fraudmesh_kaggle.ipynb    # run the full pipeline on Kaggle against real data
@@ -183,6 +184,8 @@ fraction of real fraud do we catch?" See `src/metrics.py`.
 
 ## Setup
 
+With `venv`:
+
 ```bash
 git clone <this-repo>
 cd FraudMesh
@@ -190,6 +193,22 @@ python3 -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+Or with conda, via `environment.yml` (same pinned `requirements.txt` underneath,
+just installed into a conda-managed Python 3.10 env instead of a venv):
+
+```bash
+git clone <this-repo>
+cd FraudMesh
+conda env create -f environment.yml
+conda activate fraudmesh
+```
+
+Both paths pin `numpy<2` deliberately — see the comment in `requirements.txt`;
+newer NumPy is ABI-incompatible with the torch build these dependencies
+resolve to and breaks GraphSAGE at import time. macOS users: XGBoost also
+needs the OpenMP runtime, which isn't a Python package — `brew install libomp`
+if `import xgboost` fails with a `libomp.dylib could not be loaded` error.
 
 ### Getting the data
 

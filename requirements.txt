@@ -1,5 +1,10 @@
 pandas>=2.0
-numpy>=1.24
+# Pinned <2: torch wheels available for the pinned torch>=2.1 range are
+# built against the NumPy 1.x ABI. numpy>=2 installs cleanly but breaks at
+# import time with "Failed to initialize NumPy: _ARRAY_API not found" and
+# corrupts torch.tensor()'s handling of numpy arrays (confusing downstream
+# errors like "numpy.bool object cannot be interpreted as an integer").
+numpy>=1.24,<2
 scikit-learn>=1.3
 xgboost>=2.0
 networkx>=3.0

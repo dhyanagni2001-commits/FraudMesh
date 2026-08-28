@@ -1,0 +1,10 @@
+# Kaggle notebooks come with pandas, numpy, scikit-learn, xgboost, torch
+# (GPU-matched build), networkx, matplotlib, and plotly preinstalled — do
+# NOT `pip install -r requirements.txt` on Kaggle, since that will try to
+# reinstall torch from PyPI and can silently swap out Kaggle's CUDA-matched
+# build for a mismatched or CPU-only one.
+#
+# The only thing actually missing is torch_geometric, which is a pure
+# pip-installable package (no compiled torch-scatter/torch-sparse required
+# for the SAGEConv layer this project uses).
+torch_geometric>=2.4
