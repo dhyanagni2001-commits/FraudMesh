@@ -155,7 +155,15 @@ def make_synthetic_dataset(n_rows: int = 20000, fraud_rate: float = 0.035,
         return pd.DataFrame({
             "TransactionAmt": amt,
             "card1": card1,
-            "DeviceInfo": "device_" + device,
+            # np.char.add, not "device_" + device: numpy's .astype(str) on
+            # an int64 array always allocates a fixed-width '<U21' dtype
+            # (room for any 64-bit int), regardless of the values actually
+            # present, while a bare python-str literal promotes to a
+            # narrower '<U7'. Plain "+" between mismatched string itemsizes
+            # raises a UFuncNoLoopError on some numpy versions (reproduced
+            # on 1.26) and silently works on others (2.x) — np.char.add
+            # handles the promotion correctly on both.
+            "DeviceInfo": np.char.add("device_", device),
             "P_emaildomain": rng.choice(
                 [f"domain{i}.com" for i in range(n_domains)], size=n
             ),

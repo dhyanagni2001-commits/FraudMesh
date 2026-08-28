@@ -72,11 +72,26 @@ def _load_model(feature_dim: int) -> GraphSAGE:
     return model
 
 
-def refresh_embeddings(use_synthetic: bool = True):
+def _default_use_synthetic() -> bool:
+    """Match whatever the currently-saved model was most likely trained on.
+    An explicit FRAUDMESH_SYNTHETIC env var always wins; otherwise default
+    to real data if it's present, since a model trained on real IEEE-CIS
+    features has a different input dimension than one trained on synthetic
+    data and loading it against the wrong feature set will fail."""
+    env = os.environ.get("FRAUDMESH_SYNTHETIC")
+    if env is not None:
+        return env.strip().lower() not in ("0", "false", "no")
+    return not os.path.exists(config.TRANSACTION_CSV)
+
+
+def refresh_embeddings(use_synthetic: Optional[bool] = None):
     """Rebuild the graph and re-score every known transaction. In production
     this would run on a schedule (e.g. every 5-15 minutes) against the
     latest rolling window of transactions, not the whole history — scoped
     down here for a runnable local demo."""
+    if use_synthetic is None:
+        use_synthetic = _default_use_synthetic()
+
     if use_synthetic:
         df = make_synthetic_dataset(n_rows=5000)
     else:
@@ -104,13 +119,13 @@ def refresh_embeddings(use_synthetic: bool = True):
 
 @app.on_event("startup")
 def on_startup():
-    refresh_embeddings(use_synthetic=True)
+    refresh_embeddings()
 
 
 @app.post("/refresh")
 def manual_refresh():
     """Trigger an out-of-schedule embedding refresh."""
-    refresh_embeddings(use_synthetic=True)
+    refresh_embeddings()
     return {"status": "refreshed", "n_transactions": len(_cache["scores"])}
 
 

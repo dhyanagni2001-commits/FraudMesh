@@ -34,19 +34,21 @@ how much) is what matters, not the absolute values on synthetic data.
 
 | Model | PR-AUC | Recall @ 1% FPR | Recall @ 5% FPR |
 |---|---|---|---|
-| XGBoost (baseline, no graph) | 0.8087 | 0.7862 | 0.7931 |
-| XGBoost + graph features | 0.8165 | 0.7862 | 0.8000 |
-| GraphSAGE (end-to-end) | 0.8216 | 0.7931 | 0.8207 |
+| XGBoost (baseline, no graph) | 0.8107 | 0.7862 | 0.7931 |
+| XGBoost + graph features | 0.8111 | 0.7793 | 0.8069 |
+| GraphSAGE (end-to-end) | 0.8214 | 0.7931 | 0.8207 |
 
-Reading this honestly: the graph adds real but modest lift over the tabular
-baseline (+0.0078 PR-AUC from cheap graph stats alone, +0.0129 total from
-the full GNN). GraphSAGE's main advantage over the graph-features baseline
-shows up at 5% FPR (0.800 → 0.821), while at 1% FPR the two are close
-(0.786 → 0.793). That's a meaningful nuance for a production
-recommendation: if your review team operates near a 1% FPR budget, the
-much-cheaper graph-features-only XGBoost model captures nearly all the
-value; GraphSAGE earns its complexity mainly if you can tolerate a wider
-review net.
+Reading this honestly: cheap graph statistics (degree, component size,
+PageRank) alone barely move PR-AUC over the tabular baseline (+0.0004 —
+noise-level) and don't help at all at a tight 1% FPR budget. Nearly all of
+the graph's value shows up only once you go to the full GraphSAGE model
+(+0.0107 PR-AUC over baseline, +0.0103 over the graph-features model), most
+visibly at 5% FPR (0.807 → 0.821). That's a real, decisive result for a
+production recommendation, not a close call: the structural graph
+statistics used here aren't a substitute for message passing, so if the
+graph is worth building at all, it's worth training GraphSAGE on — a
+graph-features-only XGBoost model isn't a credible cheaper alternative for
+this dataset.
 
 ### Case study: fraud rings found
 
@@ -98,6 +100,23 @@ real payment data, where collisions are rare), while fraud rings still reuse
 a small, fixed pool of cards/devices on purpose. This is what makes the
 fraud-rate-by-component-size validation (below) actually mean something.
 
+**A raw connected-component ID is deliberately NOT used as an XGBoost
+feature**, even though an earlier version of this repo included one
+(`graph_component_id`) and it showed up as a top-10 feature by importance.
+It's a leakage trap: the entity graph is built over train + test combined
+(structurally correct — see the note in `train_graph_features.py`), which
+means a component ID is shared verbatim between train and test rows in the
+same cluster. XGBoost can split exactly on that integer and memorize the
+*training* fraud rate of a component, which then "predicts" test rows in
+the same component almost perfectly for reasons that have nothing to do
+with generalizing to a new ring. Removing it dropped the graph-features
+model's PR-AUC from 0.8165 to 0.8111 — a small absolute drop, but a
+meaningful one: it changes the honest conclusion from "cheap graph stats
+capture most of the value" to "they capture almost none of it" (see
+Results). `graph_component_size`, `graph_degree`, and `graph_pagerank`
+stay, because they're real-valued structural statistics, not identity
+keys a tree can pin to.
+
 ### Graph validation
 
 Before trusting the graph is worth modeling on, `graph_builder.py` reports
@@ -120,8 +139,12 @@ entity graph really do correspond to fraud, not noise.
 
 ```
 FraudMesh/
-├── config.py                    # paths, entity-link columns, hyperparameters
-├── requirements.txt
+├── config.py                    # paths (incl. Kaggle auto-detection), entity-link
+│                                 # columns, hyperparameters
+├── requirements.txt              # local (venv) setup
+├── requirements-kaggle.txt       # Kaggle setup — just the packages Kaggle lacks
+├── notebooks/
+│   └── fraudmesh_kaggle.ipynb    # run the full pipeline on Kaggle against real data
 ├── scripts/
 │   └── run_pipeline.sh          # runs all phases end to end
 ├── src/
@@ -175,6 +198,40 @@ Download `train_transaction.csv` and `train_identity.csv` from the
 and place both in `data/`. `train_identity.csv` is optional — the pipeline
 runs on `train_transaction.csv` alone (with a smaller feature set) if it's
 not present.
+
+### Running on Kaggle
+
+The intended way to run this against the real competition data without a
+local 600MB+ download is a Kaggle Notebook:
+
+1. Get the code onto Kaggle, either:
+   - **Recommended:** zip this project folder and upload it as a private
+     Kaggle Dataset (*Add Input → Datasets → New Dataset*), then attach it
+     to your notebook, or
+   - push it to a Git remote and use the clone fallback built into the
+     notebook below.
+2. Open `notebooks/fraudmesh_kaggle.ipynb` on Kaggle (upload it directly,
+   or attach the dataset from step 1 and open it from there).
+3. *Add Input → Competitions → IEEE-CIS Fraud Detection* to attach the real
+   `train_transaction.csv` / `train_identity.csv`.
+4. Turn on a GPU accelerator (*Settings → Accelerator*) — `train_graphsage.py`
+   uses CUDA automatically when available and falls back to CPU otherwise.
+5. Run all cells.
+
+Two things are handled automatically so the same code runs unmodified in
+both places:
+
+- **Paths.** `config.py` detects `/kaggle/input` and (a) searches it for
+  whichever mounted folder actually contains `train_transaction.csv`
+  instead of assuming a fixed dataset slug, and (b) always writes
+  `results/*.json` and `models/graphsage.pt` under `/kaggle/working`, since
+  `/kaggle/input` is a read-only mount and this repo's own code may be
+  sitting on it (if uploaded as a Dataset rather than git-cloned).
+- **Dependencies.** Kaggle notebooks already ship pandas/numpy/xgboost/torch
+  matched to the notebook's CUDA build; `requirements-kaggle.txt` installs
+  only the one thing actually missing (`torch_geometric`) rather than
+  reinstalling everything from `requirements.txt`, which would risk
+  overwriting Kaggle's GPU-matched torch with a mismatched one from PyPI.
 
 ### Synthetic data mode
 

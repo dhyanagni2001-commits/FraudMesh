@@ -106,6 +106,16 @@ def add_graph_stat_features(df: pd.DataFrame, G: nx.Graph) -> pd.DataFrame:
     features (Phase 3: graph-augmented XGBoost baseline). These are the
     features that let us measure how much signal is captured WITHOUT a full
     GNN, before paying for GraphSAGE.
+
+    Deliberately NOT included: a raw connected-component ID. It's tempting
+    to add ("which cluster is this transaction in?") but it's a leakage
+    trap — the graph is built over train+test combined, so a component ID
+    is shared verbatim between train and test rows in the same cluster.
+    XGBoost can then split exactly on that ID and memorize the training
+    fraud rate of a component, which "predicts" test rows in the same
+    component perfectly for reasons that have nothing to do with
+    generalization. component_size/degree/pagerank are safe because they're
+    real-valued structural statistics, not identity keys a tree can pin to.
     """
     df = df.copy()
 
@@ -113,13 +123,10 @@ def add_graph_stat_features(df: pd.DataFrame, G: nx.Graph) -> pd.DataFrame:
     df["graph_degree"] = df.index.map(degree).fillna(0)
 
     components = list(nx.connected_components(G))
-    comp_id = {}
     comp_size = {}
-    for i, comp in enumerate(components):
+    for comp in components:
         for node in comp:
-            comp_id[node] = i
             comp_size[node] = len(comp)
-    df["graph_component_id"] = df.index.map(comp_id).fillna(-1)
     df["graph_component_size"] = df.index.map(comp_size).fillna(1)
 
     # PageRank as a cheap proxy for "central to a dense cluster"

@@ -52,7 +52,13 @@ class GraphSAGE(torch.nn.Module):
 
 
 def build_pyg_data(df, feature_cols, G):
-    x = torch.tensor(df[feature_cols].values, dtype=torch.float)
+    # fillna(0): the real IEEE-CIS columns (many V*/D* fields) are heavily
+    # missing. XGBoost handles NaN natively via its split logic, but a raw
+    # tensor doesn't — an unfilled NaN here silently propagates through
+    # standardization and every layer, turning the whole forward pass (and
+    # then the loss) into NaN with no error raised. Doesn't show up on the
+    # synthetic data since that generator never produces missing values.
+    x = torch.tensor(df[feature_cols].fillna(0).values, dtype=torch.float)
     # Standardize features — GNNs are sensitive to feature scale
     x = (x - x.mean(dim=0, keepdim=True)) / (x.std(dim=0, keepdim=True) + 1e-6)
 

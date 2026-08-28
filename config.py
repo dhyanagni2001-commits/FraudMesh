@@ -2,14 +2,50 @@
 Central configuration for FraudMesh.
 Edit DATA_DIR to point at your local IEEE-CIS CSVs
 (download from https://www.kaggle.com/c/ieee-fraud-detection/data).
+
+On Kaggle, paths are auto-detected instead (see _kaggle_data_dir below):
+competition data is read from wherever it's mounted under /kaggle/input,
+and results/models are always written under /kaggle/working, since
+/kaggle/input is a read-only mount and this repo itself may be sitting on
+it (if uploaded as a Kaggle Dataset rather than cloned into /kaggle/working).
 """
 import os
 
+
+def _on_kaggle() -> bool:
+    return os.path.isdir("/kaggle/input") or "KAGGLE_KERNEL_RUN_TYPE" in os.environ
+
+
+def _kaggle_data_dir():
+    """Find whichever /kaggle/input/<dataset>/ folder actually holds the
+    IEEE-CIS CSVs — the exact dataset/competition slug isn't guaranteed, so
+    we search rather than hard-code a path."""
+    base = "/kaggle/input"
+    if not os.path.isdir(base):
+        return None
+    for name in sorted(os.listdir(base)):
+        candidate = os.path.join(base, name)
+        if os.path.isfile(os.path.join(candidate, "train_transaction.csv")):
+            return candidate
+    return None
+
+
 # ---- Paths ----
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(ROOT_DIR, "data")
-RESULTS_DIR = os.path.join(ROOT_DIR, "results")
-MODELS_DIR = os.path.join(ROOT_DIR, "models")
+ON_KAGGLE = _on_kaggle()
+
+if ON_KAGGLE:
+    DATA_DIR = _kaggle_data_dir() or os.path.join(ROOT_DIR, "data")
+    # /kaggle/input is read-only, and ROOT_DIR itself may live there if this
+    # repo was uploaded as a Kaggle Dataset rather than git-cloned into
+    # /kaggle/working — so writes always go to /kaggle/working regardless of
+    # where the code lives.
+    RESULTS_DIR = "/kaggle/working/results"
+    MODELS_DIR = "/kaggle/working/models"
+else:
+    DATA_DIR = os.path.join(ROOT_DIR, "data")
+    RESULTS_DIR = os.path.join(ROOT_DIR, "results")
+    MODELS_DIR = os.path.join(ROOT_DIR, "models")
 
 TRANSACTION_CSV = os.path.join(DATA_DIR, "train_transaction.csv")
 IDENTITY_CSV = os.path.join(DATA_DIR, "train_identity.csv")
@@ -46,5 +82,9 @@ SAGE_DROPOUT = 0.3
 SAGE_EPOCHS = 30
 SAGE_LR = 0.005
 
-for d in (DATA_DIR, RESULTS_DIR, MODELS_DIR):
+for d in (RESULTS_DIR, MODELS_DIR):
     os.makedirs(d, exist_ok=True)
+# DATA_DIR may be a read-only /kaggle/input mount — never try to create it;
+# only ensure it exists locally, where it's expected to be writable.
+if not ON_KAGGLE:
+    os.makedirs(DATA_DIR, exist_ok=True)
