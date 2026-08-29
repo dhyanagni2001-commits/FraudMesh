@@ -83,6 +83,17 @@ def build_pyg_data(df, feature_cols, G):
     mean = raw.mean()
     std = raw.std()
     x = torch.tensor(((raw - mean) / (std + 1e-6)).fillna(0).values, dtype=torch.float)
+    # Clip after standardizing: several real IEEE-CIS V*/D*/C* columns are
+    # heavily heavy-tailed, so plain z-scoring leaves genuine outlier rows
+    # at huge magnitudes (a value 50 std devs out stays 50 std devs out).
+    # XGBoost doesn't care — it only uses relative order for splits — but a
+    # neural net does: SAGEConv sums outlier-scale values across a node's
+    # whole neighborhood, and even with the skip connection, a huge-scale
+    # aggregated half of the concatenated vector can dominate the shared
+    # output layer's gradient and starve the well-behaved raw-feature half
+    # of useful learning signal. Clipping bounds any single value's
+    # influence without needing to know which columns are the offenders.
+    x = x.clamp(-10, 10)
 
     y = torch.tensor(df[config.TARGET_COL].values, dtype=torch.float)
     edge_index = to_pyg_edge_index(G, num_nodes=len(df))
@@ -204,6 +215,14 @@ def train_graphsage(df, feature_cols, G, train_mask, test_mask,
             out[train_mask_t], y[train_mask_t], pos_weight=pos_weight
         )
         loss.backward()
+        # Clip gradient norm before stepping: a standard safety net
+        # alongside input clipping above, in case aggregation over a large
+        # real-data neighborhood still produces an occasional large-scale
+        # activation the input clip didn't fully bound — caps how much any
+        # one batch (here, one epoch, since training is full-batch) can move
+        # the weights, which stabilizes optimization without needing to
+        # know in advance which features or nodes are the outliers.
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         optimizer.step()
 
         # Checkpointed every epoch, not just at the end: the model is tiny
