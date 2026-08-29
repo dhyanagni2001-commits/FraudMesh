@@ -9,6 +9,7 @@ and results/models are always written under /kaggle/working, since
 /kaggle/input is a read-only mount and this repo itself may be sitting on
 it (if uploaded as a Kaggle Dataset rather than cloned into /kaggle/working).
 """
+import glob
 import os
 
 
@@ -17,17 +18,13 @@ def _on_kaggle() -> bool:
 
 
 def _kaggle_data_dir():
-    """Find whichever /kaggle/input/<dataset>/ folder actually holds the
-    IEEE-CIS CSVs — the exact dataset/competition slug isn't guaranteed, so
-    we search rather than hard-code a path."""
-    base = "/kaggle/input"
-    if not os.path.isdir(base):
-        return None
-    for name in sorted(os.listdir(base)):
-        candidate = os.path.join(base, name)
-        if os.path.isfile(os.path.join(candidate, "train_transaction.csv")):
-            return candidate
-    return None
+    """Find whichever folder under /kaggle/input actually holds the IEEE-CIS
+    CSVs — the exact dataset/competition slug isn't guaranteed, and neither
+    is the nesting depth (observed both a flat /kaggle/input/<slug>/*.csv
+    mount and one with the CSVs one level deeper), so we search recursively
+    rather than checking a single fixed depth."""
+    matches = sorted(glob.glob("/kaggle/input/**/train_transaction.csv", recursive=True))
+    return os.path.dirname(matches[0]) if matches else None
 
 
 # ---- Paths ----
