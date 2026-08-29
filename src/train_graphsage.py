@@ -67,11 +67,68 @@ def build_pyg_data(df, feature_cols, G):
     return x, edge_index, y
 
 
+CHECKPOINT_PATH = os.path.join(config.MODELS_DIR, "graphsage_checkpoint.pt")
+
+
+def _load_checkpoint(model, optimizer, in_dim, device):
+    """Resume from a mid-training checkpoint if one exists and matches this
+    run's input shape. Returns the epoch to resume FROM (0 if no usable
+    checkpoint), so a Kaggle session that gets killed mid-run doesn't lose
+    everything and start the full epoch count over from a random init."""
+    if not os.path.exists(CHECKPOINT_PATH):
+        return 0
+
+    try:
+        ckpt = torch.load(CHECKPOINT_PATH, map_location=device)
+    except Exception as e:
+        # A killed process (Kaggle session timeout, interrupted cell) can
+        # land exactly mid-write and leave a truncated/corrupted file. Don't
+        # let that crash the whole run — fall back to training from scratch,
+        # same as if there were no checkpoint at all.
+        print(f"  found checkpoint at {CHECKPOINT_PATH} but couldn't load it "
+              f"({e!r}) — probably corrupted by an interrupted write. "
+              "Starting fresh instead of resuming.")
+        return 0
+
+    if ckpt.get("in_dim") != in_dim:
+        print(f"  found checkpoint at {CHECKPOINT_PATH} but its input dim "
+              f"({ckpt.get('in_dim')}) doesn't match this run's ({in_dim}) — "
+              "probably from a run against different data (e.g. synthetic "
+              "vs. real). Starting fresh instead of resuming.")
+        return 0
+
+    model.load_state_dict(ckpt["model_state"])
+    optimizer.load_state_dict(ckpt["optimizer_state"])
+    done = ckpt["epoch"] + 1
+    print(f"  resuming from checkpoint at {CHECKPOINT_PATH}: "
+          f"{done} epoch(s) already completed (loss={ckpt['loss']:.4f})")
+    return done
+
+
+def _save_checkpoint(model, optimizer, epoch, in_dim, loss):
+    # Write to a temp file and rename into place rather than saving directly
+    # to CHECKPOINT_PATH: os.replace is atomic, so a process killed mid-write
+    # (session timeout, interrupted cell) leaves either the old checkpoint
+    # untouched or the new one fully written — never a truncated file that
+    # crashes the next load. Reproduced the truncated-file failure mode by
+    # kill -9'ing a run mid-save before adding this.
+    tmp_path = CHECKPOINT_PATH + ".tmp"
+    torch.save({
+        "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "epoch": epoch,
+        "in_dim": in_dim,
+        "loss": loss,
+    }, tmp_path)
+    os.replace(tmp_path, CHECKPOINT_PATH)
+
+
 def train_graphsage(df, feature_cols, G, train_mask, test_mask,
                      hidden_dim=config.SAGE_HIDDEN_DIM,
                      num_layers=config.SAGE_NUM_LAYERS,
                      dropout=config.SAGE_DROPOUT,
-                     epochs=config.SAGE_EPOCHS, lr=config.SAGE_LR):
+                     epochs=config.SAGE_EPOCHS, lr=config.SAGE_LR,
+                     resume=True):
     torch.manual_seed(config.RANDOM_SEED)
     np.random.seed(config.RANDOM_SEED)
 
@@ -82,16 +139,27 @@ def train_graphsage(df, feature_cols, G, train_mask, test_mask,
     train_mask_t = torch.tensor(train_mask, dtype=torch.bool, device=device)
     test_mask_t = torch.tensor(test_mask, dtype=torch.bool, device=device)
 
-    model = GraphSAGE(in_dim=x.shape[1], hidden_dim=hidden_dim,
+    in_dim = x.shape[1]
+    model = GraphSAGE(in_dim=in_dim, hidden_dim=hidden_dim,
                        num_layers=num_layers, dropout=dropout).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=5e-4)
+
+    start_epoch = 0
+    if resume:
+        start_epoch = _load_checkpoint(model, optimizer, in_dim, device)
+    elif os.path.exists(CHECKPOINT_PATH):
+        print(f"  --fresh passed: ignoring existing checkpoint at {CHECKPOINT_PATH}")
 
     # Class-imbalance-aware loss, same rationale as scale_pos_weight in XGBoost
     fraud_rate = y[train_mask_t].mean().item()
     pos_weight = torch.tensor((1 - fraud_rate) / max(fraud_rate, 1e-6), device=device)
 
+    if start_epoch >= epochs:
+        print(f"  checkpoint already at epoch {start_epoch} >= target {epochs}; "
+              "skipping training, evaluating current weights.")
+
     model.train()
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         optimizer.zero_grad()
         # Message passing runs over the FULL graph (structural edges are
         # known at inference time regardless of label), but loss is
@@ -104,6 +172,13 @@ def train_graphsage(df, feature_cols, G, train_mask, test_mask,
         )
         loss.backward()
         optimizer.step()
+
+        # Checkpointed every epoch, not just at the end: the model is tiny
+        # (hidden_dim=64, 2 layers) so this is cheap, and it's the only way
+        # a rerun after an interrupted Kaggle session (killed cell, hit the
+        # session time limit) picks up where it left off instead of
+        # retraining all `epochs` from a random init.
+        _save_checkpoint(model, optimizer, epoch, in_dim, loss.item())
 
         if (epoch + 1) % 5 == 0 or epoch == 0:
             print(f"  epoch {epoch + 1}/{epochs} loss={loss.item():.4f}")
@@ -118,6 +193,7 @@ def train_graphsage(df, feature_cols, G, train_mask, test_mask,
 
 
 def run(use_synthetic: bool = False, sample_frac: float | None = None,
+        resume: bool = True, epochs: int = config.SAGE_EPOCHS,
         out_path: str = os.path.join(config.RESULTS_DIR, "graphsage_metrics.json")):
     if use_synthetic:
         df = make_synthetic_dataset(n_rows=20000)
@@ -138,7 +214,8 @@ def run(use_synthetic: bool = False, sample_frac: float | None = None,
 
     print(f"Training GraphSAGE on {train_mask.sum()} nodes, "
           f"evaluating on {test_mask.sum()} held-out nodes...")
-    model, scores, y_true = train_graphsage(df, feature_cols, G, train_mask, test_mask)
+    model, scores, y_true = train_graphsage(df, feature_cols, G, train_mask, test_mask,
+                                             resume=resume, epochs=epochs)
 
     metrics = evaluate(y_true, scores, config.FPR_TARGETS)
     print(format_metrics("graphsage", metrics))
@@ -153,6 +230,14 @@ def run(use_synthetic: bool = False, sample_frac: float | None = None,
     model_path = os.path.join(config.MODELS_DIR, "graphsage.pt")
     torch.save(model.state_dict(), model_path)
     print(f"Saved model weights to {model_path}")
+
+    # Training finished the full target epoch count — clear the mid-training
+    # checkpoint so a later run against different data (or --fresh) doesn't
+    # find a stale one lying around. graphsage.pt (just saved above) is the
+    # one serve.py and future resumes-from-scratch actually care about.
+    if os.path.exists(CHECKPOINT_PATH):
+        os.remove(CHECKPOINT_PATH)
+
     return model, metrics
 
 
@@ -161,7 +246,12 @@ if __name__ == "__main__":
     parser.add_argument("--synthetic", action="store_true")
     parser.add_argument("--sample-frac", type=float, default=None)
     parser.add_argument("--epochs", type=int, default=config.SAGE_EPOCHS)
+    parser.add_argument("--fresh", action="store_true",
+                         help="Ignore any existing checkpoint and train from a random init")
     args = parser.parse_args()
-    if args.epochs != config.SAGE_EPOCHS:
-        config.SAGE_EPOCHS = args.epochs
-    run(use_synthetic=args.synthetic, sample_frac=args.sample_frac)
+    # Pass epochs through explicitly rather than mutating config.SAGE_EPOCHS:
+    # train_graphsage()'s `epochs=config.SAGE_EPOCHS` default is bound once
+    # at import time, so reassigning the config attribute afterward has no
+    # effect on it — that was silently making --epochs a no-op.
+    run(use_synthetic=args.synthetic, sample_frac=args.sample_frac,
+        resume=not args.fresh, epochs=args.epochs)
