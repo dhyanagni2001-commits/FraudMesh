@@ -25,32 +25,33 @@ makes the best story.
 
 ## Results
 
+### Synthetic data ablation
+
 Numbers below are from a full pipeline run on a synthetic dataset shaped
 like IEEE-CIS (20,000 transactions, 3.5% fraud rate, with injected fraud
-rings — see [Synthetic data](#synthetic-data-mode) below). Re-run
-`scripts/run_pipeline.sh` against the real Kaggle data to get numbers for
-the actual competition dataset; the ablation shape (which model wins, by
-how much) is what matters, not the absolute values on synthetic data.
+rings — see [Synthetic data](#synthetic-data-mode) below). This validates
+that the pipeline mechanics work end to end; see
+[Real IEEE-CIS competition data](#real-ieee-cis-competition-data-open-investigation)
+below for what actually happens on the real dataset, which tells a
+meaningfully different — and still unresolved — story.
 
 | Model | PR-AUC | Recall @ 1% FPR | Recall @ 5% FPR |
 |---|---|---|---|
 | XGBoost (baseline, no graph) | 0.8107 | 0.7862 | 0.7931 |
 | XGBoost + graph features | 0.8111 | 0.7793 | 0.8069 |
-| GraphSAGE (end-to-end) | 0.8214 | 0.7931 | 0.8207 |
+| GraphSAGE (end-to-end) | 0.8227 | 0.7931 | 0.8138 |
 
 Reading this honestly: cheap graph statistics (degree, component size,
 PageRank) alone barely move PR-AUC over the tabular baseline (+0.0004 —
 noise-level) and don't help at all at a tight 1% FPR budget. Nearly all of
 the graph's value shows up only once you go to the full GraphSAGE model
-(+0.0107 PR-AUC over baseline, +0.0103 over the graph-features model), most
-visibly at 5% FPR (0.807 → 0.821). That's a real, decisive result for a
-production recommendation, not a close call: the structural graph
-statistics used here aren't a substitute for message passing, so if the
-graph is worth building at all, it's worth training GraphSAGE on — a
-graph-features-only XGBoost model isn't a credible cheaper alternative for
-this dataset.
+(+0.0120 PR-AUC over baseline, +0.0116 over the graph-features model). On
+synthetic data, this is a real, decisive result for a production
+recommendation: the structural graph statistics used here aren't a
+substitute for message passing. Take that conclusion as validated on
+synthetic data only, though — it does not hold on the real dataset (below).
 
-### Case study: fraud rings found
+### Case study: fraud rings found (synthetic)
 
 Running `src/case_study.py` on the same synthetic data surfaces concrete,
 inspectable communities rather than just a score:
@@ -72,7 +73,106 @@ devices, that nonetheless form one tightly connected structure — because
 those cards and devices were reused across each other — with 97.4% of them
 labeled fraud. No single-transaction, row-wise model can see this pattern;
 it only exists at the graph level. This is the artifact worth walking
-through in an interview, not the PR-AUC number alone.
+through in an interview, not the PR-AUC number alone — but see below for
+how much smaller and thinner the equivalent real-data rings turn out to be.
+
+### Real IEEE-CIS competition data (open investigation)
+
+Numbers below are from a full pipeline run on the actual competition data
+(`train_transaction.csv` + `train_identity.csv`, ~590k transactions, ~3.5%
+fraud rate) via the Kaggle notebook. Unlike the synthetic numbers above,
+**the GraphSAGE result here is not a finished finding — it's an open bug
+investigation**, included anyway because this project's whole premise is
+reporting what actually happens, not what makes the cleanest story.
+
+| Model | PR-AUC | Recall @ 1% FPR | Recall @ 5% FPR |
+|---|---|---|---|
+| XGBoost (baseline, no graph) | 0.5131 | 0.4259 | 0.6245 |
+| XGBoost + graph features | 0.5125 | 0.4210 | 0.6235 |
+| GraphSAGE (end-to-end) | 0.1978 | 0.0566 | 0.4387 |
+
+Two honest observations, one settled and one not:
+
+**Settled:** cheap graph statistics add essentially zero lift over the
+baseline here (0.5125 vs. 0.5131 — a small *decrease*, within noise). This
+is a more decisive version of the same finding the synthetic data hinted
+at: on this graph (linked via `card1` + `DeviceInfo` alone), degree/
+component-size/PageRank don't carry meaningful fraud signal. The real-data
+case study below suggests why — see below.
+
+**Not settled:** GraphSAGE scores dramatically *worse* than either XGBoost
+variant, not just flat. That gap (0.51 → 0.20 PR-AUC) is too large to be a
+legitimate "the graph doesn't help" result — a well-behaved GNN shouldn't
+underperform a baseline that ignores the graph entirely, since it has
+access to the same raw features. This is being actively debugged, not
+handwaved. What's been ruled out and tried so far:
+- **Not numerical divergence** — training loss decreases smoothly and
+  monotonically every run (e.g. 1.44 → 0.87 over 30 epochs), no NaN, no
+  explosion.
+- **Not exploding feature scale from missing-value handling** — fixed the
+  standardization order (compute mean/std ignoring NaNs, *then* impute
+  missing as 0 in z-score space, not before) so a heavily-missing column
+  doesn't contaminate the statistics used to scale every other value in
+  it. Didn't move the metric.
+- **Not a lack of a raw-feature fallback path** — added a skip connection
+  so the classifier sees each transaction's raw standardized features
+  concatenated with the graph-aggregated representation, not just the
+  aggregated one. Didn't move the metric either.
+- **Not unclipped outliers** — added input clipping (`±10` post-standardization)
+  and gradient-norm clipping, in case a heavy-tailed real column or a
+  large real-graph neighborhood was producing outlier-scale activations
+  that a skip connection alone couldn't compensate for. Still no
+  meaningful change (0.1978, within noise of the original 0.1911).
+- **Leading hypothesis, not yet re-run on real data: undertraining.**
+  Training is full-batch, so one epoch is exactly one gradient step —
+  `SAGE_EPOCHS=30` (the original default) is only 30 total updates. The
+  30-epoch real-data loss curve was *still descending at a steady clip*
+  (0.9236 → 0.8946 → 0.8706) with no sign of plateauing, unlike the
+  synthetic run's loss, which visibly flattens by ~epoch 20-25 on an
+  easier 10-feature problem. None of the three fixes above would show up
+  in a model that simply hasn't had enough optimization steps yet to
+  converge on a ~380-feature real problem. Bumped `config.SAGE_EPOCHS` to
+  200 (from 30) and added a cosine learning-rate schedule so a much longer
+  run doesn't oscillate late; the checkpoint/resume support makes a
+  200-epoch real run safe to interrupt. **Not yet verified against real
+  data** — this needs a real Kaggle rerun to confirm or rule out.
+- **Still queued, independent of the above:** `train_graphsage.py --no-edges`
+  strips every graph edge (self-loops only) to isolate whether the entity
+  graph's *aggregation* is itself harmful, separate from the training-length
+  question. If a longer real run still underperforms XGBoost but `--no-edges`
+  recovers close to it, that confirms oversmoothing (real `card1` averages
+  ~44 transactions per card — vastly denser than the synthetic generator's
+  near-1:1 cardinality). If neither longer training nor `--no-edges` closes
+  the gap, the bug is somewhere else entirely (most likely the train/test
+  mask or label alignment).
+
+If you re-run this on Kaggle, update this section with whatever actually
+happens — including if the epoch fix alone closes most of the gap, which
+is the current best guess but is still just a guess until it's been run.
+
+#### Case study: fraud rings found (real data)
+
+```
+Ring #1
+  transactions:   10
+  fraud rate:     100.0%
+  avg amount:     $88.60
+  total amount:   $885.98
+  time span:      455.0 hours
+  unique cards:   1
+  unique devices: 0
+  linked via:     card1
+```
+
+Every top real-data component found this way is a *single* `card1` value
+reused 6-10 times, 100% fraud, with `DeviceInfo` contributing to none of
+them. That's a much thinner signal than the synthetic case study's
+502-transaction, 25-card, 22-device ring — real fraud "rings" as captured
+by this project's `card1`+`DeviceInfo` link columns look more like isolated
+card-testing than the coordinated multi-entity clusters the synthetic
+generator was designed to produce. This is consistent with (and plausibly
+explains) the graph-features XGBoost result above showing no lift from
+structural statistics built over this same graph.
 
 ## Why this graph, and not a simpler one
 
@@ -252,6 +352,17 @@ both places:
   reinstalling everything from `requirements.txt`, which would risk
   overwriting Kaggle's GPU-matched torch with a mismatched one from PyPI.
 
+**Troubleshooting a Kaggle session restart:** a full session restart (not
+just a kernel restart — e.g. after attaching a GPU accelerator, hitting a
+timeout, or reopening a draft session) wipes `/kaggle/working` entirely,
+including the cloned repo and installed packages; `/kaggle/input` (your
+attached data) survives. If a cell suddenly can't find `src/...` or
+`config.py`, this is almost always why. Fix: re-run the setup cells from
+the top (clone, `pip install -r requirements-kaggle.txt`) — no need to
+rerun the full pipeline, `train_graphsage.py`'s checkpoint (see above)
+picks back up on its own once the environment exists again, as long as
+`models/graphsage_checkpoint.pt` itself wasn't also wiped by the restart.
+
 ### Synthetic data mode
 
 Every script in this repo accepts a `--synthetic` flag, which generates a
@@ -288,6 +399,29 @@ For faster local iteration on the real dataset before a full run, use
 `--sample-frac 0.1` on any training script to subsample legitimate
 transactions (all fraud rows are always kept, since they're the minority
 class).
+
+### `train_graphsage.py` extra flags
+
+- **Checkpoint/resume by default.** A checkpoint (`models/graphsage_checkpoint.pt`)
+  is written after every epoch; if the script is killed mid-run (a Kaggle
+  session timeout, an interrupted cell) rerunning the same command resumes
+  from the last completed epoch instead of retraining from scratch. Writes
+  are atomic and a corrupted/truncated checkpoint falls back to a fresh
+  start rather than crashing. The checkpoint is deleted automatically once
+  training reaches its target epoch count.
+- `--fresh` — ignore any existing checkpoint and train from a random init.
+- `--epochs N` — override `config.SAGE_EPOCHS` (default 200) for this run.
+  Training is full-batch, so this is the total number of gradient steps —
+  a cosine learning-rate schedule decays over whatever epoch count you set,
+  and its state is checkpointed too, so resuming after an interruption
+  picks the LR back up at the right point rather than restarting the decay.
+- `--no-edges` — diagnostic mode: strips every graph edge (self-loops
+  only) before training, so GraphSAGE runs on identical features/labels/
+  split but with no real neighbor aggregation. Used to isolate whether the
+  entity graph itself is helping or hurting — see
+  [Real IEEE-CIS competition data](#real-ieee-cis-competition-data-open-investigation)
+  above. Writes to separate `graphsage_noedges_metrics.json` /
+  `graphsage_noedges.pt` files so it never overwrites a real run's results.
 
 ## Serving
 

@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 # Run the full FraudMesh pipeline end to end: baseline -> graph-augmented
 # XGBoost -> GraphSAGE -> case study. Produces results/*.json used in the

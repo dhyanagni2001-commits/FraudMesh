@@ -43,6 +43,8 @@ def build_entity_graph(df: pd.DataFrame, link_columns=None,
 
     for col in link_columns:
         groups = df.groupby(col).groups
+        n_skipped_entities = 0
+        n_skipped_rows = 0
         for value, idx in groups.items():
             if pd.isna(value):
                 continue
@@ -51,6 +53,8 @@ def build_entity_graph(df: pd.DataFrame, link_columns=None,
                 continue
             if len(idx) > max_edges_per_entity:
                 # skip overly generic entities (e.g. a placeholder device string)
+                n_skipped_entities += 1
+                n_skipped_rows += len(idx)
                 continue
             # connect this group as a small clique via a hub-and-spoke
             # star instead of full clique to keep edge count linear, not
@@ -58,6 +62,17 @@ def build_entity_graph(df: pd.DataFrame, link_columns=None,
             hub = idx[0]
             for other in idx[1:]:
                 G.add_edge(hub, other, entity_type=col, entity_value=str(value))
+
+        if n_skipped_entities:
+            # Silent on the real dataset this would otherwise hide exactly
+            # how much of the graph's potential signal never gets linked —
+            # e.g. a handful of very common real card1 values touching tens
+            # of thousands of rows, none of which get an edge from this
+            # column at all. Worth knowing when interpreting a weak or flat
+            # graph_features/GraphSAGE result.
+            print(f"  build_entity_graph: skipped {n_skipped_entities} '{col}' "
+                  f"value(s) above max_edges_per_entity={max_edges_per_entity} "
+                  f"({n_skipped_rows} rows got no '{col}' edges at all)")
 
     return G
 

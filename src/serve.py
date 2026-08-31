@@ -43,6 +43,7 @@ app = FastAPI(title="FraudMesh Serving API", version="0.1.0")
 # ---- In-memory cache, populated by refresh_embeddings() ----
 _cache = {
     "model": None,
+    "model_trained": False,
     "feature_cols": None,
     "df": None,
     "embeddings": None,   # not exposed separately here; we cache final scores
@@ -62,14 +63,31 @@ class ScoreResponse(BaseModel):
     note: Optional[str] = None
 
 
-def _load_model(feature_dim: int) -> GraphSAGE:
+def _load_model(feature_dim: int) -> tuple[GraphSAGE, bool]:
+    """Returns (model, is_trained). is_trained=False means no weights file
+    was found (or it didn't load cleanly), so the model is at its random
+    init — every score it produces is meaningless noise, not a real
+    prediction. Without tracking this explicitly, a caller has no way to
+    tell "0.0043 fraud probability" apart from "this model was never
+    trained" — both look like a normal, confident-looking response."""
     model = GraphSAGE(in_dim=feature_dim, hidden_dim=config.SAGE_HIDDEN_DIM,
                        num_layers=config.SAGE_NUM_LAYERS, dropout=config.SAGE_DROPOUT)
     model_path = os.path.join(config.MODELS_DIR, "graphsage.pt")
+    is_trained = False
     if os.path.exists(model_path):
-        model.load_state_dict(torch.load(model_path, map_location="cpu"))
+        try:
+            model.load_state_dict(torch.load(model_path, map_location="cpu"))
+            is_trained = True
+        except (RuntimeError, ValueError) as e:
+            print(f"WARNING: found {model_path} but couldn't load it ({e!r}) — "
+                  "probably saved by a different model architecture or feature "
+                  "set. Serving with an untrained (random-init) model instead "
+                  "of crashing; scores will be meaningless until this is fixed.")
+    else:
+        print(f"WARNING: no trained model found at {model_path} — serving with "
+              "an untrained (random-init) model. Run train_graphsage.py first.")
     model.eval()
-    return model
+    return model, is_trained
 
 
 def _default_use_synthetic() -> bool:
@@ -103,13 +121,14 @@ def refresh_embeddings(use_synthetic: Optional[bool] = None):
     G = build_entity_graph(df)
 
     x, edge_index, _ = build_pyg_data(df, feature_cols, G)
-    model = _load_model(feature_dim=x.shape[1])
+    model, is_trained = _load_model(feature_dim=x.shape[1])
 
     with torch.no_grad():
         out = model(x, edge_index)
         scores = torch.sigmoid(out).numpy()
 
     _cache["model"] = model
+    _cache["model_trained"] = is_trained
     _cache["feature_cols"] = feature_cols
     _cache["df"] = df
     _cache["scores"] = {int(tid): float(s) for tid, s in
@@ -149,7 +168,11 @@ def score_transaction(query: TransactionQuery):
 
     age = time.time() - _cache["last_refresh"]
     note = None
-    if age > 900:
+    if not _cache["model_trained"]:
+        note = ("WARNING: no trained model was found — this score comes from "
+                 "an untrained (random-init) model and is meaningless. Run "
+                 "train_graphsage.py, then call /refresh.")
+    elif age > 900:
         note = "Cache is over 15 minutes old — consider calling /refresh."
 
     return ScoreResponse(
@@ -165,6 +188,7 @@ def health():
     return {
         "status": "ok",
         "cache_populated": _cache["scores"] is not None,
+        "model_trained": _cache["model_trained"],
         "n_cached_transactions": len(_cache["scores"]) if _cache["scores"] else 0,
         "cache_age_seconds": (
             time.time() - _cache["last_refresh"] if _cache["last_refresh"] else None

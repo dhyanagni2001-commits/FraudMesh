@@ -100,7 +100,7 @@ def build_pyg_data(df, feature_cols, G):
     return x, edge_index, y
 
 
-def _load_checkpoint(model, optimizer, in_dim, device, checkpoint_path):
+def _load_checkpoint(model, optimizer, scheduler, in_dim, device, checkpoint_path):
     """Resume from a mid-training checkpoint if one exists and matches this
     run's input shape. Returns the epoch to resume FROM (0 if no usable
     checkpoint), so a Kaggle session that gets killed mid-run doesn't lose
@@ -130,6 +130,8 @@ def _load_checkpoint(model, optimizer, in_dim, device, checkpoint_path):
     try:
         model.load_state_dict(ckpt["model_state"])
         optimizer.load_state_dict(ckpt["optimizer_state"])
+        if "scheduler_state" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state"])
     except (RuntimeError, ValueError, KeyError) as e:
         # in_dim matching isn't sufficient to guarantee compatibility — the
         # model architecture itself can change between code versions (e.g.
@@ -148,7 +150,7 @@ def _load_checkpoint(model, optimizer, in_dim, device, checkpoint_path):
     return done
 
 
-def _save_checkpoint(model, optimizer, epoch, in_dim, loss, checkpoint_path):
+def _save_checkpoint(model, optimizer, scheduler, epoch, in_dim, loss, checkpoint_path):
     # Write to a temp file and rename into place rather than saving directly
     # to checkpoint_path: os.replace is atomic, so a process killed mid-write
     # (session timeout, interrupted cell) leaves either the old checkpoint
@@ -159,6 +161,7 @@ def _save_checkpoint(model, optimizer, epoch, in_dim, loss, checkpoint_path):
     torch.save({
         "model_state": model.state_dict(),
         "optimizer_state": optimizer.state_dict(),
+        "scheduler_state": scheduler.state_dict(),
         "epoch": epoch,
         "in_dim": in_dim,
         "loss": loss,
@@ -187,10 +190,17 @@ def train_graphsage(df, feature_cols, G, train_mask, test_mask,
     model = GraphSAGE(in_dim=in_dim, hidden_dim=hidden_dim,
                        num_layers=num_layers, dropout=dropout).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=5e-4)
+    # Cosine schedule down to ~0 over the full epoch budget: with the epoch
+    # count now much larger (200 default, up from 30) to give the model
+    # enough full-batch gradient steps to actually converge on the real
+    # dataset, a constant lr risks late-stage oscillation instead of settling
+    # — decaying it over the run is the standard fix and costs nothing when
+    # epochs is small too (e.g. synthetic runs still converge fine).
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     start_epoch = 0
     if resume:
-        start_epoch = _load_checkpoint(model, optimizer, in_dim, device, checkpoint_path)
+        start_epoch = _load_checkpoint(model, optimizer, scheduler, in_dim, device, checkpoint_path)
     elif os.path.exists(checkpoint_path):
         print(f"  --fresh passed: ignoring existing checkpoint at {checkpoint_path}")
 
@@ -224,16 +234,18 @@ def train_graphsage(df, feature_cols, G, train_mask, test_mask,
         # know in advance which features or nodes are the outliers.
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         optimizer.step()
+        scheduler.step()
 
         # Checkpointed every epoch, not just at the end: the model is tiny
         # (hidden_dim=64, 2 layers) so this is cheap, and it's the only way
         # a rerun after an interrupted Kaggle session (killed cell, hit the
         # session time limit) picks up where it left off instead of
         # retraining all `epochs` from a random init.
-        _save_checkpoint(model, optimizer, epoch, in_dim, loss.item(), checkpoint_path)
+        _save_checkpoint(model, optimizer, scheduler, epoch, in_dim, loss.item(), checkpoint_path)
 
-        if (epoch + 1) % 5 == 0 or epoch == 0:
-            print(f"  epoch {epoch + 1}/{epochs} loss={loss.item():.4f}")
+        if (epoch + 1) % 10 == 0 or epoch == 0:
+            print(f"  epoch {epoch + 1}/{epochs} loss={loss.item():.4f} "
+                  f"lr={scheduler.get_last_lr()[0]:.5f}")
 
     model.eval()
     with torch.no_grad():

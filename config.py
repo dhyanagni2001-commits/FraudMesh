@@ -76,7 +76,15 @@ FPR_TARGETS = [0.01, 0.05]
 SAGE_HIDDEN_DIM = 64
 SAGE_NUM_LAYERS = 2
 SAGE_DROPOUT = 0.3
-SAGE_EPOCHS = 30
+# Training is full-batch, not mini-batch — one epoch is exactly one gradient
+# step. 30 was tuned against the small, easy synthetic dataset (10 features,
+# cleanly separable rings), where the loss plateaus by ~epoch 20-25. On the
+# real ~380-feature dataset the loss is still descending at a steady clip at
+# epoch 30, no sign of plateauing — 30 total gradient steps is very likely
+# just not enough for a randomly-initialized net to converge on a harder
+# problem, independent of any architecture/scaling fix. Checkpointing (see
+# train_graphsage.py) makes a longer run safe to interrupt and resume.
+SAGE_EPOCHS = 200
 SAGE_LR = 0.005
 
 for d in (RESULTS_DIR, MODELS_DIR):
