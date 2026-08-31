@@ -16,6 +16,19 @@ is measured, not assumed:
 This repo reports whichever result actually comes out of a run, not the
 one that makes the best story.
 
+```mermaid
+flowchart TD
+    A["Transactions<br/>train_transaction.csv + train_identity.csv"] --> B["Feature engineering<br/>data_prep.py"]
+    B --> C1["1. XGBoost baseline<br/>tabular features only"]
+    B --> D["Entity graph<br/>card1 + DeviceInfo<br/>graph_builder.py"]
+    D --> C2["2. XGBoost + graph features<br/>degree, component size, PageRank"]
+    D --> C3["3. GraphSAGE<br/>end-to-end message passing"]
+    D --> F["Case study<br/>fraud ring communities"]
+    C1 --> E["Evaluate<br/>PR-AUC, recall@FPR"]
+    C2 --> E
+    C3 --> E
+```
+
 ## Results
 
 ### Synthetic data (20k rows, injected fraud rings)
@@ -34,26 +47,31 @@ graph's value shows up only with full GraphSAGE message passing
 spanning 25 cards and 22 devices, 97.4% fraud — a ring invisible to any
 row-by-row model.
 
-### Real IEEE-CIS competition data — in progress
+### Real IEEE-CIS competition data
 
 | Model | PR-AUC | Recall @ 1% FPR | Recall @ 5% FPR |
 |---|---|---|---|
 | XGBoost (baseline) | 0.5131 | 0.4259 | 0.6245 |
 | XGBoost + graph features | 0.5125 | 0.4210 | 0.6235 |
-| GraphSAGE | 0.4439 | 0.3760 | 0.5667 |
+| GraphSAGE (with graph) | 0.4369 | 0.3676 | 0.5573 |
+| GraphSAGE (`--no-edges`, graph stripped) | 0.4307 | 0.3681 | 0.5517 |
 
-Graph stats add no lift on real data — real fraud "rings" here turn out to
-be single `card1` values reused a handful of times (100% fraud, but no
-`DeviceInfo` overlap), much thinner than the synthetic case study's
-multi-entity clusters.
+**On real data, the graph adds essentially nothing — confirmed two
+independent ways.** Graph-features XGBoost is flat vs. the tabular
+baseline, and GraphSAGE scores the same with or without its own edges
+(0.4369 vs 0.4307). Real fraud "rings" here are mostly a single `card1`
+value reused a handful of times, not the multi-entity clusters the
+synthetic generator produces — thinner structure, thinner signal.
 
-GraphSAGE started at 0.20 PR-AUC (badly broken) and is now at 0.44 after
-fixing an undertraining bug (it trains full-batch, so 30 epochs was only
-30 gradient steps — bumped to 200 + a cosine LR schedule). Still below the
-XGBoost baseline; currently investigating whether `MAX_EDGES_PER_ENTITY`
-(originally 500, now 5000 — the old cap was silently excluding ~74% of
-rows from any `card1` edge) closes the rest of the gap. **This section
-reflects the last real run — update it after each Kaggle rerun.**
+The remaining gap, GraphSAGE (~0.44) vs. XGBoost (~0.51), is a **model-
+capacity difference, not a graph-value one**: a shallow neural net vs. 400
+boosted trees on the same strongly-engineered tabular features — a
+well-known pattern on tabular data generally. This directly contradicts
+the synthetic-data conclusion above, which is the actual point: validate
+on synthetic data, but never trust it as the final word. (GraphSAGE also
+started this investigation badly broken at 0.20 PR-AUC — full-batch
+training means one epoch is one gradient step, and 30 epochs was nowhere
+near enough; fixed by training for 200 epochs with a cosine LR schedule.)
 
 ## Key design decisions
 
