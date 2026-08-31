@@ -63,6 +63,25 @@ IDENTITY_CSV = os.path.join(DATA_DIR, "train_identity.csv")
 # (see data_prep.py) — just not as graph edges.
 ENTITY_LINK_COLUMNS = ["card1", "DeviceInfo"]
 
+# Any single entity value (e.g. one card1) linking more rows than this gets
+# skipped entirely rather than turned into edges — see graph_builder.py's
+# build_entity_graph for the full reasoning. 5000 (up from an original 500):
+# on the real dataset, the 500 cap silently excluded 74% of rows from ANY
+# card1 edge at all (199 card1 values, 351,598 of ~472k training rows) —
+# far more than intended. That original cap's justification (preventing a
+# full-clique edge explosion, e.g. 50k rows -> 1.25B edges) doesn't actually
+# apply to this code's hub-and-spoke construction, which is O(n) edges per
+# entity, not O(n^2) — so a much higher cap costs little computationally.
+# The real remaining risk of raising it further is qualitative, not
+# computational: an extremely common value could be a placeholder/default
+# rather than a genuine identity (some IEEE-CIS columns have exactly this),
+# in which case linking it just recreates the giant-meaningless-component
+# problem addr1/P_emaildomain were excluded for above. 5000 is a first,
+# testable step up, not a value verified optimal — re-tune if case_study.py
+# or graph_features' component_size feature start looking dominated by one
+# suspiciously huge, low-fraud-rate component.
+MAX_EDGES_PER_ENTITY = 5000
+
 # ---- Modeling ----
 TARGET_COL = "isFraud"
 TIME_COL = "TransactionDT"  # seconds since a reference point, used for time-aware split
