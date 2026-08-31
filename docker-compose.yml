@@ -1,0 +1,17 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # Synthetic mode by default so this runs with zero setup — no Kaggle
+      # download needed to try the API. Set FRAUDMESH_SYNTHETIC=0 (and
+      # mount ./data) to serve against real IEEE-CIS data instead.
+      FRAUDMESH_SYNTHETIC: "1"
+      FRAUDMESH_AUTO_REFRESH: "true"
+      FRAUDMESH_REFRESH_INTERVAL_SECONDS: "900"
+      FRAUDMESH_LOG_LEVEL: "INFO"
+    volumes:
+      - ./models:/app/models
+      - ./results:/app/results
+    restart: unless-stopped

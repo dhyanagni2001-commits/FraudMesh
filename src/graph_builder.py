@@ -176,7 +176,7 @@ def to_pyg_edge_index(G: nx.Graph, num_nodes: int):
 
 
 if __name__ == "__main__":
-    from data_prep import make_synthetic_dataset, engineer_features
+    from data_prep import engineer_features, make_synthetic_dataset
 
     df = make_synthetic_dataset(n_rows=5000)
     df = engineer_features(df)

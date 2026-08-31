@@ -13,5 +13,6 @@ torch_geometric>=2.4
 fastapi>=0.110
 uvicorn[standard]>=0.29
 pydantic>=2.0
+apscheduler>=3.10
 matplotlib>=3.7
 plotly>=5.18

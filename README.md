@@ -1,5 +1,7 @@
 # FraudMesh
 
+[![CI](https://github.com/dhyanagni2001-commits/FraudMesh/actions/workflows/ci.yml/badge.svg)](https://github.com/dhyanagni2001-commits/FraudMesh/actions/workflows/ci.yml)
+
 Graph-based fraud ring detection. Transactions are linked into a graph via
 shared card and device identifiers, and a GraphSAGE model is trained on top
 of that structure to catch coordinated fraud rings that a row-by-row model
@@ -105,10 +107,13 @@ signal that justifies building the graph at all.
 
 ```
 FraudMesh/
+├── pyproject.toml                # packaging, CLI entry points, ruff/pytest config
 ├── config.py                    # paths, Kaggle auto-detection, hyperparameters
 ├── requirements.txt              # local (venv) setup — pins numpy<2
 ├── environment.yml                # local (conda) setup
 ├── requirements-kaggle.txt       # Kaggle setup (just torch_geometric)
+├── Dockerfile / docker-compose.yml  # local-only container (no cloud cost)
+├── .github/workflows/ci.yml      # lint + test on every push/PR
 ├── notebooks/fraudmesh_kaggle.ipynb
 ├── scripts/run_pipeline.sh       # runs all phases end to end
 ├── src/
@@ -119,7 +124,9 @@ FraudMesh/
 │   ├── train_graph_features.py   # Phase 3: XGBoost + graph statistics
 │   ├── train_graphsage.py        # Phase 4: GraphSAGE
 │   ├── case_study.py             # Phase 5: fraud ring reporting
+│   ├── logging_config.py         # structured logging for the API
 │   └── serve.py                  # Phase 6: FastAPI serving
+├── tests/                         # pytest suite (synthetic data, no GPU/Kaggle needed)
 ├── data/                          # Kaggle CSVs go here (gitignored)
 ├── models/                        # trained weights (gitignored)
 └── results/                       # metrics JSON per phase
@@ -184,6 +191,24 @@ python3 src/case_study.py --synthetic
 Use `--sample-frac 0.1` on any script for faster local iteration on real
 data (fraud rows are always kept in full).
 
+## Development
+
+```bash
+pip install -e ".[dev]"   # editable install + test/lint tooling
+pytest -q                  # full test suite — synthetic data, seconds to run
+ruff check .                # lint
+pre-commit install          # optional: run ruff automatically on commit
+```
+
+`pip install -e .` also gives you CLI entry points equivalent to the
+`python3 src/...` invocations above: `fraudmesh-baseline`,
+`fraudmesh-graph-features`, `fraudmesh-graphsage`, `fraudmesh-case-study`,
+`fraudmesh-serve` (each accepts the same flags, e.g.
+`fraudmesh-baseline --synthetic`).
+
+CI (`.github/workflows/ci.yml`) runs lint + tests on every push/PR to
+`main` — free on GitHub Actions.
+
 `train_graphsage.py` extras:
 - **Resumes automatically** from `models/graphsage_checkpoint.pt` if
   interrupted (checkpointed every epoch, atomic writes, corrupted
@@ -197,6 +222,8 @@ data (fraud rows are always kept in full).
 
 ```bash
 cd src && uvicorn serve:app --reload
+# or, after `pip install -e .`:
+fraudmesh-serve
 ```
 
 ```bash
@@ -207,14 +234,41 @@ curl -X POST http://127.0.0.1:8000/refresh
 
 GraphSAGE can't score a transaction in isolation — it needs the
 transaction's graph neighborhood. `serve.py` uses a precompute-and-cache
-strategy: `/refresh` rebuilds the graph and re-scores everything into an
-in-memory cache, `/score` is then a fast lookup. `/health` reports
-whether a real trained model is loaded (`model_trained`) — an untrained
-model still serves plausible-looking but meaningless scores otherwise.
+strategy: a background job (APScheduler) refreshes the graph and re-scores
+everything into an in-memory cache on a timer, `/score` is then a fast
+lookup, and `/refresh` remains available for an on-demand, out-of-schedule
+refresh. `/health` reports whether a real trained model is loaded
+(`model_trained`) — an untrained model still serves plausible-looking but
+meaningless scores otherwise.
+
+Environment variables (all optional):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FRAUDMESH_SYNTHETIC` | auto-detect | force synthetic (`1`) or real (`0`) data |
+| `FRAUDMESH_AUTO_REFRESH` | `true` | enable/disable the background refresh job |
+| `FRAUDMESH_REFRESH_INTERVAL_SECONDS` | `900` | how often the background job refreshes |
+| `FRAUDMESH_API_KEY` | unset (auth off) | if set, `/score` and `/refresh` require a matching `X-API-Key` header (demo-grade shared secret, not a substitute for a real gateway/IdP) |
+| `FRAUDMESH_CORS_ORIGINS` | `*` | comma-separated allowed origins |
+| `FRAUDMESH_LOG_LEVEL` | `INFO` | Python logging level |
+| `FRAUDMESH_HOST` / `FRAUDMESH_PORT` | `0.0.0.0` / `8000` | bind address for `fraudmesh-serve` |
+
+### Docker (local only — no cloud cost)
+
+```bash
+docker compose up --build
+```
+
+Runs in synthetic mode by default, so this works with zero setup (no
+Kaggle download). `./models` and `./results` are mounted into the
+container so trained weights and metrics persist on the host. Swap in
+real data by setting `FRAUDMESH_SYNTHETIC=0` in `docker-compose.yml` and
+mounting `./data`.
 
 ## Tech stack
 
-XGBoost, PyTorch, PyTorch Geometric, NetworkX, FastAPI, pandas/scikit-learn.
+XGBoost, PyTorch, PyTorch Geometric, NetworkX, FastAPI, APScheduler,
+pandas/scikit-learn, pytest, ruff, Docker, GitHub Actions.
 
 ## Deliberately out of scope
 

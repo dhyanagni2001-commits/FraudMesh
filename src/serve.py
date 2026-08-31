@@ -9,36 +9,42 @@ embedding. Two practical strategies exist:
 1. Precompute + cache: periodically re-run the graph + GraphSAGE forward
    pass over the full recent transaction window, cache node embeddings, and
    at request time just do a cheap lookup + small classifier head. This is
-   what's implemented below — a background refresh job populates an
-   in-memory cache, and the API serves off the most recent cache.
+   what's implemented below — a background scheduler refreshes an in-memory
+   cache on a timer, and the API serves off the most recent cache.
 2. True online inference: attach a brand-new transaction to the live graph
    as it arrives and run a fresh forward pass. Lower latency to "ring
    awareness" but much higher engineering cost (live graph store, k-hop
    neighbor sampling online) and out of scope for this project.
 
 This app implements (1), which is the right first production step for most
-teams: a `refresh_embeddings()` job runs on a schedule (simulated here via
-a manual /refresh endpoint) and scoring is a fast in-memory operation.
+teams: a `refresh_embeddings()` job runs on a schedule (an APScheduler
+background job, `FRAUDMESH_REFRESH_INTERVAL_SECONDS` apart) and scoring is
+a fast in-memory operation. `/refresh` remains available for an on-demand,
+out-of-schedule refresh.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import time
-from typing import Optional
+from contextlib import asynccontextmanager
 
-import numpy as np
 import torch
-from fastapi import FastAPI, HTTPException
+from apscheduler.schedulers.background import BackgroundScheduler
+from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 from src.data_prep import engineer_features, get_feature_columns, make_synthetic_dataset
-from src.graph_builder import build_entity_graph, to_pyg_edge_index
+from src.graph_builder import build_entity_graph
+from src.logging_config import configure_logging
 from src.train_graphsage import GraphSAGE, build_pyg_data
 
-app = FastAPI(title="FraudMesh Serving API", version="0.1.0")
+configure_logging()
+logger = logging.getLogger(__name__)
 
 # ---- In-memory cache, populated by refresh_embeddings() ----
 _cache = {
@@ -51,6 +57,8 @@ _cache = {
     "last_refresh": None,
 }
 
+_scheduler = BackgroundScheduler()
+
 
 class TransactionQuery(BaseModel):
     transaction_id: int
@@ -60,7 +68,7 @@ class ScoreResponse(BaseModel):
     transaction_id: int
     fraud_probability: float
     cache_age_seconds: float
-    note: Optional[str] = None
+    note: str | None = None
 
 
 def _load_model(feature_dim: int) -> tuple[GraphSAGE, bool]:
@@ -79,13 +87,18 @@ def _load_model(feature_dim: int) -> tuple[GraphSAGE, bool]:
             model.load_state_dict(torch.load(model_path, map_location="cpu"))
             is_trained = True
         except (RuntimeError, ValueError) as e:
-            print(f"WARNING: found {model_path} but couldn't load it ({e!r}) — "
-                  "probably saved by a different model architecture or feature "
-                  "set. Serving with an untrained (random-init) model instead "
-                  "of crashing; scores will be meaningless until this is fixed.")
+            logger.warning(
+                "found %s but couldn't load it (%r) — probably saved by a "
+                "different model architecture or feature set. Serving with "
+                "an untrained (random-init) model instead of crashing; "
+                "scores will be meaningless until this is fixed.",
+                model_path, e,
+            )
     else:
-        print(f"WARNING: no trained model found at {model_path} — serving with "
-              "an untrained (random-init) model. Run train_graphsage.py first.")
+        logger.warning(
+            "no trained model found at %s — serving with an untrained "
+            "(random-init) model. Run train_graphsage.py first.", model_path,
+        )
     model.eval()
     return model, is_trained
 
@@ -102,11 +115,11 @@ def _default_use_synthetic() -> bool:
     return not os.path.exists(config.TRANSACTION_CSV)
 
 
-def refresh_embeddings(use_synthetic: Optional[bool] = None):
-    """Rebuild the graph and re-score every known transaction. In production
-    this would run on a schedule (e.g. every 5-15 minutes) against the
-    latest rolling window of transactions, not the whole history — scoped
-    down here for a runnable local demo."""
+def refresh_embeddings(use_synthetic: bool | None = None):
+    """Rebuild the graph and re-score every known transaction. Runs on a
+    schedule via the background scheduler (see lifespan() below) against
+    the latest rolling window of transactions in a real deployment — scoped
+    down here for a runnable local demo (whole history, not a window)."""
     if use_synthetic is None:
         use_synthetic = _default_use_synthetic()
 
@@ -136,19 +149,85 @@ def refresh_embeddings(use_synthetic: Optional[bool] = None):
     _cache["last_refresh"] = time.time()
 
 
-@app.on_event("startup")
-def on_startup():
-    refresh_embeddings()
+def _safe_refresh():
+    """Wraps refresh_embeddings() so a bad refresh (missing data, a
+    corrupted checkpoint, transient I/O error) logs and leaves the previous
+    cache in place instead of crashing the process (at startup) or killing
+    the background scheduler thread (on a scheduled tick)."""
+    try:
+        refresh_embeddings()
+        logger.info("Embeddings refreshed: %d transactions cached",
+                     len(_cache["scores"] or {}))
+    except Exception:
+        logger.exception(
+            "refresh_embeddings() failed; serving from the previous cache "
+            "(or an empty one, if this was the first attempt)"
+        )
 
 
-@app.post("/refresh")
+def _auto_refresh_enabled() -> bool:
+    return os.environ.get("FRAUDMESH_AUTO_REFRESH", "true").strip().lower() not in (
+        "0", "false", "no",
+    )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _safe_refresh()
+    if _auto_refresh_enabled():
+        interval = int(os.environ.get("FRAUDMESH_REFRESH_INTERVAL_SECONDS", "900"))
+        _scheduler.add_job(_safe_refresh, "interval", seconds=interval,
+                            id="refresh_embeddings", replace_existing=True)
+        _scheduler.start()
+        logger.info("Background auto-refresh enabled: every %ds", interval)
+    else:
+        logger.info("Background auto-refresh disabled (FRAUDMESH_AUTO_REFRESH=false)")
+    yield
+    if _scheduler.running:
+        _scheduler.shutdown(wait=False)
+
+
+app = FastAPI(title="FraudMesh Serving API", version="0.1.0", lifespan=lifespan)
+
+_cors_origins_env = os.environ.get("FRAUDMESH_CORS_ORIGINS", "*").strip()
+if _cors_origins_env == "*":
+    _cors_origins = ["*"]
+    _cors_allow_credentials = False  # spec disallows credentials with a wildcard origin
+else:
+    _cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+    _cors_allow_credentials = True
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_allow_credentials,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")):
+    """Demo-grade shared-secret auth, not a substitute for a real gateway/
+    IdP. Disabled entirely (no auth) unless FRAUDMESH_API_KEY is set —
+    keeps local/CI/demo usage frictionless while still showing the pattern
+    a real deployment would put behind a proper API gateway."""
+    expected = os.environ.get("FRAUDMESH_API_KEY")
+    if expected and x_api_key != expected:
+        raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key header")
+
+
+@app.post("/refresh", dependencies=[Depends(require_api_key)])
 def manual_refresh():
     """Trigger an out-of-schedule embedding refresh."""
-    refresh_embeddings()
+    try:
+        refresh_embeddings()
+    except Exception as e:
+        logger.exception("Manual /refresh failed")
+        raise HTTPException(status_code=500, detail=f"Refresh failed: {e!r}") from e
     return {"status": "refreshed", "n_transactions": len(_cache["scores"])}
 
 
-@app.post("/score", response_model=ScoreResponse)
+@app.post("/score", response_model=ScoreResponse, dependencies=[Depends(require_api_key)])
 def score_transaction(query: TransactionQuery):
     if _cache["scores"] is None:
         raise HTTPException(status_code=503, detail="Cache not yet populated, call /refresh")
@@ -159,10 +238,10 @@ def score_transaction(query: TransactionQuery):
             status_code=404,
             detail=(
                 f"Transaction {query.transaction_id} not found in the cached "
-                "graph. New transactions must go through /refresh (or, in "
-                "production, wait for the next scheduled refresh) before "
-                "they can be scored, since GraphSAGE needs their entity "
-                "neighborhood to compute an embedding."
+                "graph. New transactions must go through /refresh (or wait "
+                "for the next scheduled refresh) before they can be scored, "
+                "since GraphSAGE needs their entity neighborhood to compute "
+                "an embedding."
             ),
         )
 
@@ -196,6 +275,12 @@ def health():
     }
 
 
-if __name__ == "__main__":
+def main():
     import uvicorn
-    uvicorn.run("serve:app", host="0.0.0.0", port=8000, reload=False)
+    host = os.environ.get("FRAUDMESH_HOST", "0.0.0.0")
+    port = int(os.environ.get("FRAUDMESH_PORT", "8000"))
+    uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    main()

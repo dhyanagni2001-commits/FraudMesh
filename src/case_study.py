@@ -91,10 +91,14 @@ def run(use_synthetic: bool = False, sample_frac: float | None = None,
     return summaries
 
 
-if __name__ == "__main__":
+def main(argv=None):
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--synthetic", action="store_true")
     parser.add_argument("--sample-frac", type=float, default=None)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     run(use_synthetic=args.synthetic, sample_frac=args.sample_frac)
+
+
+if __name__ == "__main__":
+    main()

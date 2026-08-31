@@ -325,7 +325,7 @@ def run(use_synthetic: bool = False, sample_frac: float | None = None,
     return model, metrics
 
 
-if __name__ == "__main__":
+def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--synthetic", action="store_true")
     parser.add_argument("--sample-frac", type=float, default=None)
@@ -335,10 +335,14 @@ if __name__ == "__main__":
     parser.add_argument("--no-edges", action="store_true",
                          help="Diagnostic: strip all graph edges to isolate whether the "
                               "graph itself is helping or hurting GraphSAGE")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     # Pass epochs through explicitly rather than mutating config.SAGE_EPOCHS:
     # train_graphsage()'s `epochs=config.SAGE_EPOCHS` default is bound once
     # at import time, so reassigning the config attribute afterward has no
     # effect on it — that was silently making --epochs a no-op.
     run(use_synthetic=args.synthetic, sample_frac=args.sample_frac,
         resume=not args.fresh, epochs=args.epochs, no_edges=args.no_edges)
+
+
+if __name__ == "__main__":
+    main()

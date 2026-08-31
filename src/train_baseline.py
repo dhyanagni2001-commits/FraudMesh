@@ -13,13 +13,17 @@ import json
 import os
 import sys
 
-import numpy as np
 import xgboost as xgb
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
-from src.data_prep import (engineer_features, get_feature_columns,
-                            load_raw, make_synthetic_dataset, time_aware_split)
+from src.data_prep import (
+    engineer_features,
+    get_feature_columns,
+    load_raw,
+    make_synthetic_dataset,
+    time_aware_split,
+)
 from src.metrics import evaluate, format_metrics
 
 
@@ -82,11 +86,15 @@ def run(use_synthetic: bool = False, sample_frac: float | None = None,
     return model, metrics
 
 
-if __name__ == "__main__":
+def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--synthetic", action="store_true",
                          help="Use generated synthetic data instead of real IEEE-CIS CSVs")
     parser.add_argument("--sample-frac", type=float, default=None,
                          help="Subsample fraction of legit rows for faster local runs")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     run(use_synthetic=args.synthetic, sample_frac=args.sample_frac)
+
+
+if __name__ == "__main__":
+    main()
